@@ -1,0 +1,159 @@
+﻿@page "/"
+@using System.Security.Principal
+
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.AspNetCore.Authorization
+@using BlazorApp6.Services
+@implements IAsyncDisposable
+@inject NavigationManager Navigation
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>SignalR Hub with IIS</PageTitle>
+
+<div class="row">
+    <div class="col-md-9">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <strong>Connected as : @currentUser</strong>
+        </div>
+
+        <div class="card border-dark">
+            <div class="card-header">
+                <strong>The message thread will appear below :</strong>
+            </div>
+            <div class="card-body" style="height: 400px; overflow-y: auto; border:solid" id="messagesContainer">
+                @foreach (var message in messages)
+                {
+                    <div class="mb-2 @(message.IsSystemMessage ? "system-message" : "")">
+                        <small class="text-muted">[@message.Timestamp.ToString("HH:mm:ss.fff")]</small>
+                        <strong class="@(message.IsSystemMessage ? "text-info" : "")">@message.UserName:</strong>
+                        <span class="@(message.IsSystemMessage ? "text-info" : "")">@message.Message</span>
+                    </div>
+                }
+            </div>
+            <div class="card-footer">
+                <div class="input-group" style="margin-top:10px;">
+                    <input class="form-control" @bind="messageInput" @onkeypress="@(async (e) => { if (e.Key == "Enter") await SendMessage(); })" placeholder="Enter your message here..." disabled="@(!IsConnected)" />
+                    <button class="btn btn-primary" @onclick="SendMessage" disabled="@(!IsConnected)">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <h5>Number of connected users : (@connectedUsers.Count)</h5>
+        <div class="list-group">
+            @foreach (var user in connectedUsers)
+            {
+                <div class="list-group-item">
+                    <i class="text-success">●</i> @user
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private string currentUser = string.Empty;
+    private HubConnection? hubConnection;
+    private List<ChatMessage> messages = new();
+    private List<string> connectedUsers = new();
+    private string messageInput = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Get current user
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var identity = authState.User.Identity as WindowsIdentity;
+        currentUser = identity?.Name ?? "User unknown";
+
+        // SignalR negotiate fails from Blazor Server with windows authentication #25000
+        // https://github.com/dotnet/aspnetcore/issues/25000#issuecomment-1877615925
+
+        // how to use impersonation when using Windows auth and SignalR from a Blazor Server app #34618
+        // https://github.com/dotnet/AspNetCore.Docs/blob/main/aspnetcore/blazor/fundamentals/signalr.md
+
+        if (identity is not null)
+        {
+            await WindowsIdentity.RunImpersonatedAsync(identity.AccessToken, async () =>
+            {
+                // Connection configuration
+                hubConnection = new HubConnectionBuilder()
+                    .WithUrl(Navigation.ToAbsoluteUri("/chathub"),
+                    config =>
+                    {
+                        config.UseDefaultCredentials = true;
+                    })
+                    .WithAutomaticReconnect()
+
+                .Build();
+
+                // Listening for incomming messages
+                hubConnection.On<ChatMessage>("ReceiveMessage", (message) =>
+                {
+                    messages.Add(message);
+                    InvokeAsync(StateHasChanged);
+                    InvokeAsync(() => ScrollToBottom());
+                });
+
+                // Get messages on connection
+                hubConnection.On<List<ChatMessage>>("LoadRecentMessages", (recentMessages) =>
+                {
+                    messages.AddRange(recentMessages);
+                    InvokeAsync(StateHasChanged);
+                    InvokeAsync(() => ScrollToBottom());
+                });
+
+                // Listening for user connections
+                hubConnection.On<string>("UserJoined", (userName) =>
+                {
+                    InvokeAsync(StateHasChanged);
+                });
+
+                // Listening user disconnections
+                hubConnection.On<string>("UserLeft", (userName) =>
+                {
+                    InvokeAsync(StateHasChanged);
+                });
+
+                // Update connected users list
+                hubConnection.On<List<string>>("UpdateUserList", (users) =>
+                {
+                    connectedUsers = users;
+                    InvokeAsync(StateHasChanged);
+                });
+
+                await hubConnection.StartAsync();
+            });
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        if (!string.IsNullOrWhiteSpace(messageInput) && IsConnected)
+        {
+            await hubConnection!.SendAsync("SendMessage", messageInput);
+            messageInput = string.Empty;
+        }
+    }
+
+    private async Task ScrollToBottom()
+    {
+        await Task.Delay(50); // Let time to render
+        await InvokeAsync(() =>
+        {
+            StateHasChanged();
+        });
+    }
+
+    public bool IsConnected =>
+        hubConnection?.State == HubConnectionState.Connected;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}
