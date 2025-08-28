@@ -16,7 +16,6 @@ namespace BlazorApp6
             var logDirectory = Path.Combine(builder.Environment.ContentRootPath, "logs");
             Directory.CreateDirectory(logDirectory);
 
-            // Configuration de Serilog
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Debug()
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Information)

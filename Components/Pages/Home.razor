@@ -1,13 +1,13 @@
 ﻿@page "/"
+@using System.Net
+@using System.Net.Sockets;
 @using System.Security.Principal
-
-@using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.SignalR.Client
-@using Microsoft.AspNetCore.Authorization
 @using BlazorApp6.Services
 @implements IAsyncDisposable
 @inject NavigationManager Navigation
 @inject AuthenticationStateProvider AuthenticationStateProvider
+@inject ILogger<Home> Log
 
 <PageTitle>SignalR Hub with IIS</PageTitle>
 
@@ -77,17 +77,34 @@
         {
             await WindowsIdentity.RunImpersonatedAsync(identity.AccessToken, async () =>
             {
+                
                 // Connection configuration
+#if DEBUG
+                // using IIS express here
                 hubConnection = new HubConnectionBuilder()
-                    .WithUrl(Navigation.ToAbsoluteUri("/chathub"),
+                    .WithUrl(Navigation.ToAbsoluteUri("/chathub"),               
                     config =>
                     {
                         config.UseDefaultCredentials = true;
                     })
                     .WithAutomaticReconnect()
-
+                .Build();  
+#else           
+                // using IIS in a production environment release build
+                var hostName = Environment.MachineName;
+                var addresses = Dns.GetHostAddresses(hostName);
+                var ipv4 = addresses.FirstOrDefault(addresses => addresses.AddressFamily == AddressFamily.InterNetwork)?.ToString();
+                var uriBuilded = new UriBuilder(Navigation.ToAbsoluteUri("/chathub")) { Scheme = "http", Port = 80, Host=ipv4}.ToString();
+                Log.LogInformation("chathub URI builded [{uriBuilded}]", uriBuilded);
+                hubConnection = new HubConnectionBuilder()
+                    .WithUrl(Navigation.ToAbsoluteUri(uriBuilded),
+                    config =>
+                    {
+                        config.UseDefaultCredentials = true;
+                    })
+                    .WithAutomaticReconnect()
                 .Build();
-
+#endif
                 // Listening for incomming messages
                 hubConnection.On<ChatMessage>("ReceiveMessage", (message) =>
                 {
